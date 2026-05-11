@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getBucket } from '../config/firebase.js';
+import { admin, getBucket } from '../config/firebase.js';
+import config from '../config/env.js';
+import AppError from '../utils/AppError.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,7 +39,11 @@ class VideoStorageService {
         videoUrl: `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(gcsPath)}?alt=media`,
         storagePath: `gs://${bucket.name}/${gcsPath}`,
       };
-    } catch {
+    } catch (err) {
+      if (config.isProduction()) {
+        throw new AppError(`Video storage upload failed: ${err.message}`, 502);
+      }
+
       this.ensureUploadDir();
       const localFile = path.join(this.uploadsDir, `${lessonId}.${ext}`);
       await fs.promises.writeFile(localFile, fileBuffer);
@@ -69,6 +75,25 @@ class VideoStorageService {
       fileSize: fs.statSync(filePath).size,
       contentType,
     };
+  }
+
+  async getSignedVideoUrl(storagePath) {
+    const match = storagePath.match(/^gs:\/\/([^/]+)\/(.+)$/);
+    if (!match) return null;
+
+    const [, bucketName, filePath] = match;
+    const bucket = getBucket();
+    const targetBucket = bucket.name === bucketName ? bucket : admin.storage().bucket(bucketName);
+    const file = targetBucket.file(filePath);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 15 * 60 * 1000,
+    });
+
+    return url;
   }
 }
 

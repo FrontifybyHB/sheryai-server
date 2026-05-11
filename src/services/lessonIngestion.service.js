@@ -18,12 +18,12 @@ class LessonIngestionService {
     await this.updateLessonStatus(lessonId, { status, progress }).catch(() => {});
   }
 
-  async runYoutubeIngest(lessonId, youtubeUrl, title) {
+  async runYoutubeIngest(lessonId, youtubeUrl, title, preloadedTranscript = null) {
     logger.info(`[YouTube Ingest] Starting lesson ${lessonId}`);
 
     try {
       await this.safeProgress(lessonId, 'transcribing', 10);
-      const normalizedTranscript = await this.transcriptService.fetchYoutubeTranscript(youtubeUrl);
+      const normalizedTranscript = preloadedTranscript || await this.transcriptService.fetchYoutubeTranscript(youtubeUrl);
 
       await this.safeProgress(lessonId, 'processing', 40);
       const chunks = this.chunkingService.chunkTranscript(normalizedTranscript);

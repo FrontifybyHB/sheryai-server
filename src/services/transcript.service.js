@@ -3,9 +3,11 @@ import * as youtubeTranscriptPkg from 'youtube-transcript';
 import * as assemblyPkg from 'assemblyai';
 import config from '../config/env.js';
 import { msToSeconds } from '../utils/timeFormatter.js';
+import AppError from '../utils/AppError.js';
 
 const { YoutubeTranscript } = youtubeTranscriptPkg;
 const { AssemblyAI } = assemblyPkg;
+const CAPTIONS_UNAVAILABLE_MESSAGE = 'This video has no captions available. Please upload the video file directly instead.';
 
 class TranscriptService {
   constructor() {
@@ -46,14 +48,20 @@ class TranscriptService {
     try {
       rawTranscript = await YoutubeTranscript.fetchTranscript(videoId);
     } catch (err) {
-      if (err.message?.includes('disabled') || err.message?.includes('No transcript')) {
-        throw new Error('This video has no captions available. Please upload the video file directly instead.');
+      if (this.isCaptionUnavailableError(err)) {
+        throw new AppError(CAPTIONS_UNAVAILABLE_MESSAGE, 422, {
+          reason: 'youtube_captions_unavailable',
+          suggestedAction: 'upload_video',
+        });
       }
       throw new Error(`YouTube transcript error: ${err.message}`);
     }
 
     if (!rawTranscript?.length) {
-      throw new Error('This video has no captions available. Please upload the video file directly instead.');
+      throw new AppError(CAPTIONS_UNAVAILABLE_MESSAGE, 422, {
+        reason: 'youtube_captions_unavailable',
+        suggestedAction: 'upload_video',
+      });
     }
 
     return this.normalizeTranscript(rawTranscript.map((segment) => ({
@@ -61,6 +69,11 @@ class TranscriptService {
       start: msToSeconds(segment.offset),
       end: msToSeconds(segment.offset + segment.duration),
     })));
+  }
+
+  isCaptionUnavailableError(err) {
+    const message = err?.message || '';
+    return /disabled|no transcript|no captions|not available|could not find/i.test(message);
   }
 
   async uploadBufferToAssemblyAI(fileBuffer) {

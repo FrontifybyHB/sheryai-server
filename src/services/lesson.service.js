@@ -18,6 +18,7 @@ class LessonService {
       throw new AppError('Invalid YouTube URL. Supported formats: watch?v=, youtu.be/, embed/', 400);
     }
 
+    const normalizedTranscript = await this.transcriptService.fetchYoutubeTranscript(payload.youtubeUrl);
     const lessonId = uuidv4();
     const lessonData = {
       lessonId,
@@ -42,7 +43,7 @@ class LessonService {
     };
 
     await this.lessonRepository.create(lessonData);
-    setImmediate(() => this.ingestionService.runYoutubeIngest(lessonId, payload.youtubeUrl, payload.title));
+    setImmediate(() => this.ingestionService.runYoutubeIngest(lessonId, payload.youtubeUrl, payload.title, normalizedTranscript));
 
     return {
       lessonId,
@@ -154,6 +155,12 @@ class LessonService {
   async getVideo(lessonId) {
     const lesson = await this.getById(lessonId);
     if (lesson.videoUrl) return { type: 'redirect', url: lesson.videoUrl };
+
+    if (lesson.storagePath?.startsWith('gs://')) {
+      const signedUrl = await this.videoStorageService.getSignedVideoUrl(lesson.storagePath);
+      if (!signedUrl) throw new AppError('Video file not found in cloud storage.', 404);
+      return { type: 'redirect', url: signedUrl };
+    }
 
     if (!lesson.storagePath?.startsWith('local:')) {
       throw new AppError('No video file for this lesson.', 404);
