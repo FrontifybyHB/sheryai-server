@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
-import { admin, getBucket } from '../config/firebase.js';
+import { Storage } from '@google-cloud/storage';
 import config from '../config/env.js';
 import AppError from '../utils/AppError.js';
 
@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 class VideoStorageService {
   constructor() {
     this.uploadsDir = path.join(__dirname, '../../uploads/videos');
+    this.gcsClient = null;
   }
 
   ensureUploadDir() {
@@ -60,42 +61,126 @@ class VideoStorageService {
     return path.join(this.uploadsDir, fileName);
   }
 
+  normalizedGcsPrefix() {
+    return (config.gcsUploadPrefix || 'vidask/videos').replace(/^\/+|\/+$/g, '');
+  }
+
+  isGcsEnabled() {
+    return config.storageProvider === 'gcs' || Boolean(config.gcsBucketName);
+  }
+
+  gcsOptions() {
+    const options = {};
+
+    if (config.gcsProjectId) {
+      options.projectId = config.gcsProjectId;
+    }
+
+    if (config.gcsKeyFile) {
+      options.keyFilename = config.gcsKeyFile;
+      return options;
+    }
+
+    if (config.gcsClientEmail && config.gcsPrivateKey) {
+      options.credentials = {
+        client_email: config.gcsClientEmail,
+        private_key: config.gcsPrivateKey.replace(/\\n/g, '\n'),
+      };
+    }
+
+    return options;
+  }
+
+  getGcsClient() {
+    if (!this.gcsClient) {
+      this.gcsClient = new Storage(this.gcsOptions());
+    }
+
+    return this.gcsClient;
+  }
+
+  getGcsBucket() {
+    if (!config.gcsBucketName) {
+      throw new AppError('GCS_BUCKET_NAME is missing from environment variables.', 500);
+    }
+
+    return this.getGcsClient().bucket(config.gcsBucketName);
+  }
+
+  signedUrlTtlSeconds() {
+    return config.gcsSignedUrlTtlSeconds;
+  }
+
+  parseGcsStoragePath(storagePath) {
+    const match = storagePath?.match(/^gs:\/\/([^/]+)\/(.+)$/);
+    if (!match) return null;
+
+    const [, bucketName, storageKey] = match;
+    return { bucketName, storageKey };
+  }
+
+  async storeVideoInGcs({ lessonId, fileBuffer, fileMime, fileName }) {
+    const ext = this.extensionFromFileName(fileName, fileMime);
+    const bucket = this.getGcsBucket();
+    const storageKey = `${this.normalizedGcsPrefix()}/${uuidv4()}.${ext}`;
+    const contentType = fileMime || this.contentTypeFromExtension(storageKey);
+    const file = bucket.file(storageKey);
+
+    await file.save(fileBuffer, {
+      contentType,
+      metadata: {
+        cacheControl: 'private, max-age=0, no-transform',
+        metadata: {
+          lessonId,
+          originalName: fileName || '',
+        },
+      },
+      resumable: false,
+      validation: 'crc32c',
+    });
+
+    const storagePath = `gs://${bucket.name}/${storageKey}`;
+
+    return {
+      storageProvider: 'google_cloud',
+      storageKey,
+      storagePath,
+      storageUrl: storagePath,
+      publicUrl: null,
+      videoUrl: null,
+    };
+  }
+
   async storeVideo({ lessonId, fileBuffer, fileMime, fileName }) {
     const ext = this.extensionFromFileName(fileName, fileMime);
 
-    try {
-      const bucket = getBucket();
-      const gcsPath = `videos/${lessonId}.${ext}`;
-      const file = bucket.file(gcsPath);
-      const downloadToken = uuidv4();
-      await file.save(fileBuffer, {
-        metadata: {
-          contentType: fileMime,
-          metadata: {
-            firebaseStorageDownloadTokens: downloadToken,
-            lessonId,
-            originalName: fileName,
-          },
-        },
-        resumable: false,
-      });
-
-      return {
-        videoUrl: `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(gcsPath)}?alt=media&token=${downloadToken}`,
-        storagePath: `gs://${bucket.name}/${gcsPath}`,
-      };
-    } catch (err) {
-      if (config.isProduction()) {
-        throw new AppError(`Video storage upload failed: ${err.message}`, 502);
+    if (this.isGcsEnabled()) {
+      try {
+        return await this.storeVideoInGcs({ lessonId, fileBuffer, fileMime, fileName });
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        throw new AppError(`GCS video upload failed: ${err.message}`, 502);
       }
+    }
 
+    if (config.isProduction()) {
+      throw new AppError('Google Cloud Storage is not configured. Set STORAGE_PROVIDER=gcs and GCS_BUCKET_NAME.', 500);
+    }
+
+    try {
       this.ensureUploadDir();
       const localFile = this.resolveLocalVideoPath(`local:${lessonId}.${ext}`);
       await fs.promises.writeFile(localFile, fileBuffer);
       return {
+        storageProvider: 'local',
+        storageKey: `${lessonId}.${ext}`,
         videoUrl: null,
         storagePath: `local:${lessonId}.${ext}`,
+        storageUrl: null,
+        publicUrl: null,
       };
+    } catch (err) {
+      throw new AppError(`Local video storage failed: ${err.message}`, 500);
     }
   }
 
@@ -114,19 +199,18 @@ class VideoStorageService {
   }
 
   async getSignedVideoUrl(storagePath) {
-    const match = storagePath.match(/^gs:\/\/([^/]+)\/(.+)$/);
-    if (!match) return null;
+    const parsed = this.parseGcsStoragePath(storagePath);
+    if (!parsed) return null;
 
-    const [, bucketName, filePath] = match;
-    const bucket = getBucket();
-    const targetBucket = bucket.name === bucketName ? bucket : admin.storage().bucket(bucketName);
-    const file = targetBucket.file(filePath);
+    const { bucketName, storageKey } = parsed;
+    const file = this.getGcsClient().bucket(bucketName).file(storageKey);
     const [exists] = await file.exists();
     if (!exists) return null;
 
     const [url] = await file.getSignedUrl({
       action: 'read',
-      expires: Date.now() + 15 * 60 * 1000,
+      expires: Date.now() + config.gcsSignedUrlTtlSeconds * 1000,
+      version: 'v4',
     });
 
     return url;
@@ -142,13 +226,11 @@ class VideoStorageService {
       return true;
     }
 
-    const match = storagePath.match(/^gs:\/\/([^/]+)\/(.+)$/);
-    if (!match) return false;
+    const parsed = this.parseGcsStoragePath(storagePath);
+    if (!parsed) return false;
 
-    const [, bucketName, filePath] = match;
-    const bucket = getBucket();
-    const targetBucket = bucket.name === bucketName ? bucket : admin.storage().bucket(bucketName);
-    const file = targetBucket.file(filePath);
+    const { bucketName, storageKey } = parsed;
+    const file = this.getGcsClient().bucket(bucketName).file(storageKey);
     const [exists] = await file.exists();
     if (!exists) return false;
 

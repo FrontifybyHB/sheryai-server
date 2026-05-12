@@ -97,6 +97,11 @@ class LessonController {
     return fs.createReadStream(video.filePath).pipe(res);
   });
 
+  playbackUrl = asyncHandler(async (req, res) => {
+    const playback = await this.lessonService.getPlaybackUrl(req.params.lessonId);
+    res.json(ApiResponse.success(playback, 'Playback URL fetched'));
+  });
+
   getById = asyncHandler(async (req, res) => {
     const lesson = await this.lessonService.getById(req.params.lessonId);
     res.json(ApiResponse.success({ lesson }, 'Lesson fetched'));

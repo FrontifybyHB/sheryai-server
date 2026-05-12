@@ -3,8 +3,11 @@ import config from '../config/env.js';
 import logger from '../loggers/logger.js';
 
 const errorHandler = (err, req, res, _next) => {
-  const statusCode = err.statusCode || err.status || 500;
-  const message = err.message || 'Internal Server Error';
+  const isUploadTooLarge = err.code === 'LIMIT_FILE_SIZE';
+  const statusCode = err.statusCode || err.status || (isUploadTooLarge ? 413 : 500);
+  const message = isUploadTooLarge
+    ? `File too large. Maximum upload size is ${config.maxVideoUploadMb} MB.`
+    : err.message || 'Internal Server Error';
 
   logger.error(message, {
     requestId: req.requestId,

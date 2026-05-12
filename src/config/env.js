@@ -20,6 +20,15 @@ class EnvConfig {
     this.firebaseClientEmail = source.FIREBASE_CLIENT_EMAIL || '';
     this.firebasePrivateKey = source.FIREBASE_PRIVATE_KEY || '';
     this.firebaseStorageBucket = source.FIREBASE_STORAGE_BUCKET || '';
+    this.storageProvider = source.STORAGE_PROVIDER || (source.GCS_BUCKET_NAME ? 'gcs' : 'local');
+    this.gcsBucketName = source.GCS_BUCKET_NAME || '';
+    this.gcsProjectId = source.GCS_PROJECT_ID || '';
+    this.gcsKeyFile = source.GCS_KEY_FILE || '';
+    this.gcsClientEmail = source.GCS_CLIENT_EMAIL || '';
+    this.gcsPrivateKey = source.GCS_PRIVATE_KEY || '';
+    this.gcsUploadPrefix = source.GCS_UPLOAD_PREFIX || 'vidask/videos';
+    this.gcsSignedUrlTtlSeconds = Number(source.GCS_SIGNED_URL_TTL_SECONDS || 900);
+    this.maxVideoUploadMb = Number(source.MAX_VIDEO_UPLOAD_MB || 100);
     this.assemblyAiApiKey = source.ASSEMBLYAI_API_KEY || '';
     this.nvidiaApiKey = source.NVIDIA_API_KEY || '';
     this.nvidiaModel = source.NVIDIA_MODEL || 'nvidia/nemotron-3-nano-30b-a3b';

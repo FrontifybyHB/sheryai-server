@@ -103,11 +103,14 @@ class LessonService {
     if (!file) throw new AppError('No file uploaded.', 400);
 
     const lessonId = uuidv4();
-    const ext = this.videoStorageService.extensionFromFileName(file.originalname, file.mimetype);
     const lessonData = this.baseLessonData(payload, user, {
       lessonId,
       source: 'upload',
-      storagePath: `local:${lessonId}.${ext}`,
+      storageProvider: null,
+      storageKey: null,
+      storagePath: null,
+      storageUrl: null,
+      publicUrl: null,
       status: 'uploading',
       progress: 1,
     });
@@ -266,6 +269,39 @@ class LessonService {
       ...localInfo,
       fileName: path.basename(localInfo.filePath),
     };
+  }
+
+  async getPlaybackUrl(lessonId) {
+    const lesson = await this.getById(lessonId);
+
+    if (lesson.storagePath?.startsWith('gs://')) {
+      const signedUrl = await this.videoStorageService.getSignedVideoUrl(lesson.storagePath);
+      if (!signedUrl) throw new AppError('Video file not found in cloud storage.', 404);
+
+      return {
+        url: signedUrl,
+        type: 'signed_url',
+        expiresInSeconds: this.videoStorageService.signedUrlTtlSeconds(),
+      };
+    }
+
+    if (lesson.videoUrl) {
+      return {
+        url: lesson.videoUrl,
+        type: 'public_url',
+        expiresInSeconds: null,
+      };
+    }
+
+    if (lesson.storagePath?.startsWith('local:')) {
+      return {
+        url: `/api/lessons/${lessonId}/video`,
+        type: 'local_stream',
+        expiresInSeconds: null,
+      };
+    }
+
+    throw new AppError('No video file for this lesson.', 404);
   }
 
   async regenerateChapters(lessonId) {

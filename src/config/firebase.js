@@ -39,15 +39,16 @@ class FirebaseConfig {
       return admin.app();
     }
 
-    if (!config.firebaseStorageBucket) {
-      throw new Error('FIREBASE_STORAGE_BUCKET is missing from environment variables.');
+    const serviceAccount = this.parseServiceAccount();
+    const appConfig = {
+      credential: admin.credential.cert(serviceAccount),
+    };
+
+    if (config.firebaseStorageBucket) {
+      appConfig.storageBucket = config.firebaseStorageBucket;
     }
 
-    const serviceAccount = this.parseServiceAccount();
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      storageBucket: config.firebaseStorageBucket,
-    });
+    admin.initializeApp(appConfig);
 
     admin.firestore().settings({ ignoreUndefinedProperties: true });
     this.initialized = true;
@@ -61,6 +62,10 @@ class FirebaseConfig {
   }
 
   getBucket() {
+    if (!config.firebaseStorageBucket) {
+      throw new Error('FIREBASE_STORAGE_BUCKET is missing from environment variables.');
+    }
+
     this.initialize();
     return admin.storage().bucket();
   }
