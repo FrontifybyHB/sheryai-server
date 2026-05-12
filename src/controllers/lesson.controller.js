@@ -7,8 +7,43 @@ class LessonController {
     this.lessonService = lessonService;
   }
 
+  parseRangeHeader(rangeHeader, fileSize) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader || '');
+    if (!match) return null;
+
+    const [, rawStart, rawEnd] = match;
+    if (!rawStart && !rawEnd) return null;
+
+    let start;
+    let end;
+
+    if (!rawStart) {
+      const suffixLength = Number(rawEnd);
+      if (!Number.isInteger(suffixLength) || suffixLength <= 0) return null;
+      start = Math.max(fileSize - suffixLength, 0);
+      end = fileSize - 1;
+    } else {
+      start = Number(rawStart);
+      end = rawEnd ? Number(rawEnd) : Math.min(start + 10 * 1024 * 1024, fileSize - 1);
+    }
+
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= fileSize) {
+      return null;
+    }
+
+    return {
+      start,
+      end: Math.min(end, fileSize - 1),
+    };
+  }
+
   ingestYoutube = asyncHandler(async (req, res) => {
     const result = await this.lessonService.createYoutubeLesson(req.body, req.user);
+    res.status(201).json(ApiResponse.success(result, result.message, 201));
+  });
+
+  ingestUrl = asyncHandler(async (req, res) => {
+    const result = await this.lessonService.createUrlLesson(req.body, req.user);
     res.status(201).json(ApiResponse.success(result, result.message, 201));
   });
 
@@ -32,9 +67,17 @@ class LessonController {
 
     const rangeHeader = req.headers.range;
     if (rangeHeader) {
-      const parts = rangeHeader.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024, video.fileSize - 1);
+      const range = this.parseRangeHeader(rangeHeader, video.fileSize);
+
+      if (!range) {
+        res.writeHead(416, {
+          'Content-Range': `bytes */${video.fileSize}`,
+          'Accept-Ranges': 'bytes',
+        });
+        return res.end();
+      }
+
+      const { start, end } = range;
       const chunkSize = end - start + 1;
 
       res.writeHead(206, {
@@ -60,8 +103,26 @@ class LessonController {
   });
 
   list = asyncHandler(async (req, res) => {
-    const lessons = await this.lessonService.listByCourse(req.query.courseId);
+    const lessons = await this.lessonService.listByCourse(req.query.courseId, {
+      status: req.query.status,
+      includeFailed: req.query.includeFailed,
+    });
     res.json(ApiResponse.success({ lessons }, 'Lessons fetched'));
+  });
+
+  failed = asyncHandler(async (req, res) => {
+    const result = await this.lessonService.listFailedByCourse(req.query.courseId);
+    res.json(ApiResponse.success(result, 'Failed lessons fetched'));
+  });
+
+  deleteFailed = asyncHandler(async (req, res) => {
+    const result = await this.lessonService.deleteFailedByCourse(req.query.courseId);
+    res.json(ApiResponse.success(result, 'Failed lessons deleted'));
+  });
+
+  deleteFailedLesson = asyncHandler(async (req, res) => {
+    const result = await this.lessonService.deleteFailedLesson(req.params.lessonId);
+    res.json(ApiResponse.success(result, 'Failed lesson deleted'));
   });
 
   regenerateChapters = asyncHandler(async (req, res) => {

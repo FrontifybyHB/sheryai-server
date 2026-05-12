@@ -3,13 +3,37 @@ import path from 'path';
 import AppError from '../utils/AppError.js';
 
 class LessonService {
-  constructor({ lessonRepository, transcriptService, ingestionService, videoStorageService, chunkCacheService, aiMetadataService }) {
+  constructor({ lessonRepository, transcriptService, ingestionService, videoStorageService, chunkRepository, chunkCacheService, aiMetadataService }) {
     this.lessonRepository = lessonRepository;
     this.transcriptService = transcriptService;
     this.ingestionService = ingestionService;
     this.videoStorageService = videoStorageService;
+    this.chunkRepository = chunkRepository;
     this.chunkCacheService = chunkCacheService;
     this.aiMetadataService = aiMetadataService;
+  }
+
+  baseLessonData(payload, user, overrides = {}) {
+    const now = new Date().toISOString();
+    return {
+      lessonId: overrides.lessonId || uuidv4(),
+      courseId: payload.courseId,
+      moduleId: payload.moduleId || 'default',
+      title: payload.title,
+      description: payload.description || '',
+      order: Number(payload.order || 0),
+      status: 'processing',
+      progress: 0,
+      chunkCount: 0,
+      duration: 0,
+      starterQuestions: [],
+      topicSegments: [],
+      createdBy: user.uid,
+      createdAt: now,
+      updatedAt: now,
+      error: null,
+      ...overrides,
+    };
   }
 
   async createYoutubeLesson(payload, user) {
@@ -18,37 +42,60 @@ class LessonService {
       throw new AppError('Invalid YouTube URL. Supported formats: watch?v=, youtu.be/, embed/', 400);
     }
 
-    const normalizedTranscript = await this.transcriptService.fetchYoutubeTranscript(payload.youtubeUrl);
     const lessonId = uuidv4();
-    const lessonData = {
+    const lessonData = this.baseLessonData(payload, user, {
       lessonId,
-      courseId: payload.courseId,
-      moduleId: payload.moduleId || 'default',
-      title: payload.title,
-      description: payload.description || '',
-      order: Number(payload.order || 0),
       source: 'youtube',
       youtubeUrl: payload.youtubeUrl,
       youtubeVideoId: videoId,
-      status: 'processing',
-      progress: 0,
-      chunkCount: 0,
-      duration: 0,
-      starterQuestions: [],
-      topicSegments: [],
-      createdBy: user.uid,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      error: null,
-    };
+    });
 
     await this.lessonRepository.create(lessonData);
-    setImmediate(() => this.ingestionService.runYoutubeIngest(lessonId, payload.youtubeUrl, payload.title, normalizedTranscript));
+    setImmediate(() => this.ingestionService.runYoutubeIngest(
+      lessonId,
+      payload.youtubeUrl,
+      payload.title,
+      payload.language || 'auto',
+    ));
 
     return {
       lessonId,
       status: 'processing',
-      message: 'Lesson created. Processing has started in the background.',
+      message: 'YouTube lesson created. Transcript processing has started in the background.',
+    };
+  }
+
+  async createUrlLesson(payload, user) {
+    const normalized = this.transcriptService.normalizePublicMediaUrl(payload.sourceUrl);
+
+    if (normalized.sourceType === 'youtube') {
+      return this.createYoutubeLesson({ ...payload, youtubeUrl: normalized.url }, user);
+    }
+
+    const lessonId = uuidv4();
+    const lessonData = this.baseLessonData(payload, user, {
+      lessonId,
+      source: normalized.sourceType,
+      sourceUrl: payload.sourceUrl,
+      publicMediaUrl: normalized.url,
+      videoUrl: normalized.url,
+      status: 'transcribing',
+      progress: 5,
+    });
+
+    await this.lessonRepository.create(lessonData);
+    setImmediate(() => this.ingestionService.runPublicUrlIngest(
+      lessonId,
+      normalized.url,
+      payload.title,
+      payload.language || 'auto',
+    ));
+
+    return {
+      lessonId,
+      status: 'transcribing',
+      source: normalized.sourceType,
+      message: 'URL lesson created. Transcript processing has started in the background.',
     };
   }
 
@@ -56,27 +103,14 @@ class LessonService {
     if (!file) throw new AppError('No file uploaded.', 400);
 
     const lessonId = uuidv4();
-    const ext = file.originalname.split('.').pop().toLowerCase();
-    const lessonData = {
+    const ext = this.videoStorageService.extensionFromFileName(file.originalname, file.mimetype);
+    const lessonData = this.baseLessonData(payload, user, {
       lessonId,
-      courseId: payload.courseId,
-      moduleId: payload.moduleId || 'default',
-      title: payload.title,
-      description: payload.description || '',
-      order: Number(payload.order || 0),
       source: 'upload',
       storagePath: `local:${lessonId}.${ext}`,
       status: 'uploading',
       progress: 1,
-      chunkCount: 0,
-      duration: 0,
-      starterQuestions: [],
-      topicSegments: [],
-      createdBy: user.uid,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      error: null,
-    };
+    });
 
     await this.lessonRepository.create(lessonData);
 
@@ -131,9 +165,8 @@ class LessonService {
     return safeLesson;
   }
 
-  async listByCourse(courseId) {
-    const lessons = await this.lessonRepository.findAllByCourseId(courseId);
-    return lessons.map((lesson) => ({
+  formatLessonForList(lesson) {
+    return {
       id: lesson.lessonId,
       lessonId: lesson.lessonId,
       title: lesson.title,
@@ -141,26 +174,85 @@ class LessonService {
       order: lesson.order,
       source: lesson.source,
       status: lesson.status,
+      progress: lesson.progress || 0,
       duration: lesson.duration,
       chunkCount: lesson.chunkCount,
       youtubeUrl: lesson.youtubeUrl,
       youtubeVideoId: lesson.youtubeVideoId,
+      sourceUrl: lesson.sourceUrl || null,
       videoUrl: lesson.videoUrl || null,
+      error: lesson.error || null,
       starterQuestions: lesson.starterQuestions || [],
       topicSegments: lesson.topicSegments || [],
       createdAt: lesson.createdAt,
-    }));
+      updatedAt: lesson.updatedAt,
+    };
+  }
+
+  async listByCourse(courseId, { status = '', includeFailed = false } = {}) {
+    const lessons = await this.lessonRepository.findAllByCourseId(courseId);
+    return lessons
+      .filter((lesson) => (status ? lesson.status === status : true))
+      .filter((lesson) => includeFailed || status === 'failed' || lesson.status !== 'failed')
+      .map((lesson) => this.formatLessonForList(lesson));
+  }
+
+  async listFailedByCourse(courseId) {
+    const lessons = await this.lessonRepository.findAllByCourseId(courseId);
+    const failed = lessons
+      .filter((lesson) => lesson.status === 'failed')
+      .map((lesson) => this.formatLessonForList(lesson));
+
+    return {
+      total: failed.length,
+      lessons: failed,
+    };
+  }
+
+  async deleteFailedLesson(lessonId) {
+    const lesson = await this.getById(lessonId);
+    if (lesson.status !== 'failed') {
+      throw new AppError('Only failed lessons can be deleted from this cleanup endpoint.', 400);
+    }
+
+    const deletedChunks = await this.chunkRepository.deleteByLessonId(lessonId);
+    const deletedVideo = await this.videoStorageService.deleteVideo(lesson.storagePath).catch(() => false);
+    await this.lessonRepository.deleteById(lessonId);
+    this.chunkCacheService.invalidate(lessonId);
+
+    return {
+      lessonId,
+      deleted: true,
+      deletedChunks,
+      deletedVideo,
+    };
+  }
+
+  async deleteFailedByCourse(courseId) {
+    const failed = (await this.lessonRepository.findAllByCourseId(courseId))
+      .filter((lesson) => lesson.status === 'failed');
+
+    const results = [];
+    for (const lesson of failed) {
+      results.push(await this.deleteFailedLesson(lesson.lessonId));
+    }
+
+    return {
+      deletedCount: results.length,
+      results,
+    };
   }
 
   async getVideo(lessonId) {
     const lesson = await this.getById(lessonId);
-    if (lesson.videoUrl) return { type: 'redirect', url: lesson.videoUrl };
 
     if (lesson.storagePath?.startsWith('gs://')) {
       const signedUrl = await this.videoStorageService.getSignedVideoUrl(lesson.storagePath);
-      if (!signedUrl) throw new AppError('Video file not found in cloud storage.', 404);
-      return { type: 'redirect', url: signedUrl };
+      if (signedUrl) return { type: 'redirect', url: signedUrl };
+      if (!lesson.videoUrl) throw new AppError('Video file not found in cloud storage.', 404);
     }
+
+    if (lesson.videoUrl) return { type: 'redirect', url: lesson.videoUrl };
 
     if (!lesson.storagePath?.startsWith('local:')) {
       throw new AppError('No video file for this lesson.', 404);

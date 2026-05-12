@@ -14,12 +14,23 @@ class ChunkingService {
     let chunkIndex = 0;
     const totalDuration = normalizedTranscript[normalizedTranscript.length - 1]?.end || 0;
     const step = this.windowSeconds - this.overlapSeconds;
+    let startPointer = 0;
 
     for (let windowStart = 0; windowStart < totalDuration; windowStart += step) {
       const windowEnd = windowStart + this.windowSeconds;
-      const segments = normalizedTranscript.filter((segment) => (
-        segment.start < windowEnd && segment.end > windowStart
-      ));
+      while (
+        startPointer < normalizedTranscript.length
+        && normalizedTranscript[startPointer].end <= windowStart
+      ) {
+        startPointer += 1;
+      }
+
+      const segments = [];
+      for (let index = startPointer; index < normalizedTranscript.length; index += 1) {
+        const segment = normalizedTranscript[index];
+        if (segment.start >= windowEnd) break;
+        if (segment.end > windowStart) segments.push(segment);
+      }
 
       if (!segments.length) continue;
 

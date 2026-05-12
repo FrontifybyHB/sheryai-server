@@ -38,6 +38,7 @@ class Container {
       transcriptService: this.transcriptService,
       ingestionService: this.ingestionService,
       videoStorageService: this.videoStorageService,
+      chunkRepository: this.chunkRepository,
       chunkCacheService: this.chunkCacheService,
       aiMetadataService: this.aiMetadataService,
     });

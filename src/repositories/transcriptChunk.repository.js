@@ -58,6 +58,23 @@ class TranscriptChunkRepository extends TranscriptChunkContract {
       .map((doc) => ({ id: doc.id, ...doc.data() }))
       .sort((a, b) => a.chunkIndex - b.chunkIndex);
   }
+
+  async deleteByLessonId(lessonId) {
+    const snapshot = await this.collection()
+      .where('lessonId', '==', lessonId)
+      .get();
+
+    let deleted = 0;
+    for (let index = 0; index < snapshot.docs.length; index += this.batchSize) {
+      const batchDocs = snapshot.docs.slice(index, index + this.batchSize);
+      const firestoreBatch = this.dbProvider().batch();
+      batchDocs.forEach((doc) => firestoreBatch.delete(doc.ref));
+      await firestoreBatch.commit();
+      deleted += batchDocs.length;
+    }
+
+    return deleted;
+  }
 }
 
 export default TranscriptChunkRepository;

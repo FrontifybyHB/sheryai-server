@@ -6,6 +6,10 @@ class TranscriptChunkContract {
   async findByLessonId(_lessonId) {
     throw new Error('Method not implemented: findByLessonId');
   }
+
+  async deleteByLessonId(_lessonId) {
+    throw new Error('Method not implemented: deleteByLessonId');
+  }
 }
 
 export default TranscriptChunkContract;

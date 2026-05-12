@@ -37,6 +37,11 @@ class LessonRepository extends LessonContract {
     await this.collection().doc(lessonId).update(updateData);
     return this.findById(lessonId);
   }
+
+  async deleteById(lessonId) {
+    await this.collection().doc(lessonId).delete();
+    return true;
+  }
 }
 
 export default LessonRepository;

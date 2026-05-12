@@ -7,10 +7,17 @@ const errorHandler = (err, req, res, _next) => {
   const message = err.message || 'Internal Server Error';
 
   logger.error(message, {
+    requestId: req.requestId,
     statusCode,
     method: req.method,
     path: req.originalUrl,
+    query: req.query,
+    user: {
+      uid: req.user?.uid,
+      role: req.user?.role,
+    },
     stack: config.isProduction() ? undefined : err.stack,
+    details: err.details,
   });
 
   const response = ApiResponse.error(

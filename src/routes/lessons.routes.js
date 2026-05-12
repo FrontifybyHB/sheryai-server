@@ -20,11 +20,15 @@ const upload = multer({
 });
 
 router.post('/ingest-youtube', validateRequest(validator.youtubeIngest()), controller.ingestYoutube);
+router.post('/ingest-url', validateRequest(validator.urlIngest()), controller.ingestUrl);
 router.post('/upload', upload.single('file'), validateRequest(validator.upload()), controller.upload);
+router.get('/failed', validateRequest(validator.failedQuery(), 'query'), controller.failed);
+router.delete('/failed', validateRequest(validator.failedQuery(), 'query'), controller.deleteFailed);
 router.get('/:lessonId/status', controller.status);
 router.get('/:lessonId/video', controller.video);
 router.post('/:lessonId/regenerate-chapters', controller.regenerateChapters);
 router.get('/:lessonId/transcript', controller.transcript);
+router.delete('/:lessonId/failed', controller.deleteFailedLesson);
 router.get('/:lessonId', controller.getById);
 router.get('/', validateRequest(validator.listQuery(), 'query'), controller.list);
 

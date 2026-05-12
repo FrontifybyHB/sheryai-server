@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from 'uuid';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 
@@ -7,16 +8,26 @@ class ChatController {
   }
 
   stream = asyncHandler(async (req, res) => {
-    const { lessonId, sessionId, message, currentTime } = req.body;
+    const { lessonId, message, currentTime } = req.body;
+    const sessionId = req.body.sessionId || uuidv4();
     const history = await this.chatService.getSessionHistory(req.user.uid, lessonId, sessionId);
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('X-Chat-Session-Id', sessionId);
     res.flushHeaders();
 
-    req.on('close', () => res.end());
+    res.write(`data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`);
+
+    let clientAborted = false;
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        clientAborted = true;
+        res.end();
+      }
+    });
 
     let fullResponse = '';
     let followUps = [];
@@ -29,6 +40,8 @@ class ChatController {
         currentTime,
         history,
       })) {
+        if (clientAborted || res.writableEnded) break;
+
         if (event.type === 'token') fullResponse += event.content;
         if (event.type === 'followUps') followUps = event.items || [];
         if (event.type === 'done') {
@@ -40,12 +53,14 @@ class ChatController {
         res.write(`data: ${JSON.stringify(publicEvent)}\n\n`);
       }
     } catch {
-      res.write(`data: ${JSON.stringify({ type: 'error', message: 'AI service error. Please try again.' })}\n\n`);
+      if (!clientAborted && !res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: 'AI service error. Please try again.' })}\n\n`);
+      }
     }
 
-    res.end();
+    if (!res.writableEnded) res.end();
 
-    if (fullResponse) {
+    if (fullResponse && !clientAborted) {
       setImmediate(() => this.chatService.saveSessionMessage(
         sessionId,
         lessonId,
@@ -55,6 +70,7 @@ class ChatController {
         followUps,
       ));
     }
+
   });
 
   summary = asyncHandler(async (req, res) => {

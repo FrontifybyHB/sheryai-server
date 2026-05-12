@@ -14,6 +14,10 @@ class LessonContract {
   async updateById(_lessonId, _data) {
     throw new Error('Method not implemented: updateById');
   }
+
+  async deleteById(_lessonId) {
+    throw new Error('Method not implemented: deleteById');
+  }
 }
 
 export default LessonContract;

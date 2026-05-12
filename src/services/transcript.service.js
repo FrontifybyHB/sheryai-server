@@ -40,13 +40,91 @@ class TranscriptService {
     return null;
   }
 
-  async fetchYoutubeTranscript(youtubeUrl) {
+  extractGoogleDriveFileId(url) {
+    const patterns = [
+      /drive\.google\.com\/file\/d\/([^/]+)/i,
+      /drive\.google\.com\/open\?id=([^&]+)/i,
+      /drive\.google\.com\/uc\?(?:[^#]*&)?id=([^&]+)/i,
+      /docs\.google\.com\/uc\?(?:[^#]*&)?id=([^&]+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return decodeURIComponent(match[1]);
+    }
+
+    return null;
+  }
+
+  isBlockedHost(hostname) {
+    const host = hostname.toLowerCase();
+    return host === 'localhost'
+      || host === '0.0.0.0'
+      || host === '::1'
+      || /^127\./.test(host)
+      || /^10\./.test(host)
+      || /^192\.168\./.test(host)
+      || /^169\.254\./.test(host)
+      || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+  }
+
+  normalizePublicMediaUrl(sourceUrl) {
+    let parsed;
+    try {
+      parsed = new URL(sourceUrl);
+    } catch {
+      throw new AppError('Invalid URL. Paste a full public https:// video URL.', 400);
+    }
+
+    if (!['https:', 'http:'].includes(parsed.protocol)) {
+      throw new AppError('Only public http/https video URLs are supported.', 400);
+    }
+
+    if (this.isBlockedHost(parsed.hostname)) {
+      throw new AppError('Private or localhost URLs are not supported for video ingestion.', 400);
+    }
+
+    const googleDriveFileId = this.extractGoogleDriveFileId(sourceUrl);
+    if (googleDriveFileId) {
+      return {
+        url: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(googleDriveFileId)}`,
+        sourceType: 'google_drive',
+      };
+    }
+
+    if (/youtube\.com|youtu\.be/i.test(parsed.hostname)) {
+      return {
+        url: sourceUrl,
+        sourceType: 'youtube',
+      };
+    }
+
+    return {
+      url: sourceUrl,
+      sourceType: /zoom\.us$/i.test(parsed.hostname) || /\.zoom\.us$/i.test(parsed.hostname)
+        ? 'zoom'
+        : 'external_url',
+    };
+  }
+
+  youtubeSegmentTime(value, duration) {
+    const numeric = Number(value || 0);
+    const numericDuration = Number(duration || 0);
+
+    if (!Number.isFinite(numeric)) return 0;
+    return numericDuration > 120 ? msToSeconds(numeric) : numeric;
+  }
+
+  async fetchYoutubeTranscript(youtubeUrl, language = 'auto') {
     const videoId = this.extractYoutubeId(youtubeUrl);
     if (!videoId) throw new Error('Invalid YouTube URL format.');
 
     let rawTranscript;
     try {
-      rawTranscript = await YoutubeTranscript.fetchTranscript(videoId);
+      rawTranscript = await YoutubeTranscript.fetchTranscript(
+        youtubeUrl,
+        language === 'auto' ? undefined : { lang: language },
+      );
     } catch (err) {
       if (this.isCaptionUnavailableError(err)) {
         throw new AppError(CAPTIONS_UNAVAILABLE_MESSAGE, 422, {
@@ -66,8 +144,8 @@ class TranscriptService {
 
     return this.normalizeTranscript(rawTranscript.map((segment) => ({
       text: segment.text,
-      start: msToSeconds(segment.offset),
-      end: msToSeconds(segment.offset + segment.duration),
+      start: this.youtubeSegmentTime(segment.offset, segment.duration),
+      end: this.youtubeSegmentTime(Number(segment.offset || 0) + Number(segment.duration || 0), segment.duration),
     })));
   }
 
