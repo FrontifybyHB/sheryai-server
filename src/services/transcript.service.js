@@ -2,12 +2,16 @@ import { Readable } from 'stream';
 import * as youtubeTranscriptPkg from 'youtube-transcript';
 import * as assemblyPkg from 'assemblyai';
 import config from '../config/env.js';
+import logger from '../loggers/logger.js';
 import { msToSeconds } from '../utils/timeFormatter.js';
 import AppError from '../utils/AppError.js';
 
 const { YoutubeTranscript } = youtubeTranscriptPkg;
 const { AssemblyAI } = assemblyPkg;
-const CAPTIONS_UNAVAILABLE_MESSAGE = 'This video has no captions available. Please upload the video file directly instead.';
+const CAPTIONS_UNAVAILABLE_MESSAGE = 'Could not fetch captions from YouTube for this video. It may not expose captions to our production server. Please upload the video file directly instead.';
+const CAPTIONS_LANGUAGE_UNAVAILABLE_MESSAGE = 'Captions are not available in the selected language for this video. Try Auto language or upload the video file directly instead.';
+const YOUTUBE_FETCH_BLOCKED_MESSAGE = 'YouTube blocked or rate-limited caption fetching from our production server. Please upload the video file directly instead.';
+const YOUTUBE_VIDEO_UNAVAILABLE_MESSAGE = 'This YouTube video is unavailable. Check the URL, privacy settings, or upload the video file directly instead.';
 
 class TranscriptService {
   constructor() {
@@ -115,27 +119,91 @@ class TranscriptService {
     return numericDuration > 120 ? msToSeconds(numeric) : numeric;
   }
 
+  youtubeFetchConfig(language, trace) {
+    const configOptions = {};
+    if (language !== 'auto') configOptions.lang = language;
+    configOptions.fetch = this.createTracedYoutubeFetch(trace);
+    return configOptions;
+  }
+
+  createTracedYoutubeFetch(trace) {
+    return async (url, options = {}) => {
+      const startedAt = Date.now();
+      const attempt = this.youtubeFetchAttempt(url, options);
+
+      try {
+        const response = await fetch(url, options);
+        trace.push({
+          ...attempt,
+          status: response.status,
+          ok: response.ok,
+          contentType: response.headers.get('content-type'),
+          durationMs: Date.now() - startedAt,
+        });
+        return response;
+      } catch (err) {
+        trace.push({
+          ...attempt,
+          errorName: err.name,
+          error: err.message,
+          durationMs: Date.now() - startedAt,
+        });
+        throw err;
+      }
+    };
+  }
+
+  youtubeFetchAttempt(url, options = {}) {
+    try {
+      const parsed = new URL(url);
+      return {
+        method: options.method || 'GET',
+        host: parsed.hostname,
+        path: parsed.pathname,
+      };
+    } catch {
+      return {
+        method: options.method || 'GET',
+        host: 'invalid-url',
+        path: '',
+      };
+    }
+  }
+
   async fetchYoutubeTranscript(youtubeUrl, language = 'auto') {
     const videoId = this.extractYoutubeId(youtubeUrl);
     if (!videoId) throw new Error('Invalid YouTube URL format.');
 
     let rawTranscript;
+    const fetchTrace = [];
     try {
-      rawTranscript = await YoutubeTranscript.fetchTranscript(
-        youtubeUrl,
-        language === 'auto' ? undefined : { lang: language },
-      );
+      rawTranscript = await YoutubeTranscript.fetchTranscript(youtubeUrl, this.youtubeFetchConfig(language, fetchTrace));
     } catch (err) {
-      if (this.isCaptionUnavailableError(err)) {
-        throw new AppError(CAPTIONS_UNAVAILABLE_MESSAGE, 422, {
-          reason: 'youtube_captions_unavailable',
-          suggestedAction: 'upload_video',
+      const failure = this.classifyYoutubeTranscriptFailure(err, fetchTrace);
+      logger.warn('YouTube transcript fetch failed', {
+        videoId,
+        language,
+        reason: failure.reason,
+        error: err,
+        fetchTrace,
+      });
+
+      if (failure.statusCode) {
+        throw new AppError(failure.message, failure.statusCode, {
+          reason: failure.reason,
+          suggestedAction: failure.suggestedAction,
         });
       }
+
       throw new Error(`YouTube transcript error: ${err.message}`);
     }
 
     if (!rawTranscript?.length) {
+      logger.warn('YouTube transcript fetch returned no segments', {
+        videoId,
+        language,
+        fetchTrace,
+      });
       throw new AppError(CAPTIONS_UNAVAILABLE_MESSAGE, 422, {
         reason: 'youtube_captions_unavailable',
         suggestedAction: 'upload_video',
@@ -152,6 +220,64 @@ class TranscriptService {
   isCaptionUnavailableError(err) {
     const message = err?.message || '';
     return /disabled|no transcript|no captions|not available|could not find/i.test(message);
+  }
+
+  classifyYoutubeTranscriptFailure(err, fetchTrace = []) {
+    const message = err?.message || '';
+    const hasBlockedStatus = fetchTrace.some((attempt) => [403, 408, 409, 429, 500, 502, 503, 504].includes(attempt.status));
+    const hasFetchError = fetchTrace.some((attempt) => attempt.error);
+
+    if (/captcha|too many|rate.?limit|unusual traffic|blocked|forbidden/i.test(message) || hasBlockedStatus) {
+      return {
+        statusCode: 422,
+        message: YOUTUBE_FETCH_BLOCKED_MESSAGE,
+        reason: 'youtube_transcript_fetch_blocked',
+        suggestedAction: 'upload_video',
+      };
+    }
+
+    if (hasFetchError) {
+      return {
+        statusCode: 422,
+        message: CAPTIONS_UNAVAILABLE_MESSAGE,
+        reason: 'youtube_transcript_fetch_failed',
+        suggestedAction: 'upload_video',
+      };
+    }
+
+    if (/no longer available|video is unavailable/i.test(message)) {
+      return {
+        statusCode: 422,
+        message: YOUTUBE_VIDEO_UNAVAILABLE_MESSAGE,
+        reason: 'youtube_video_unavailable',
+        suggestedAction: 'check_youtube_url',
+      };
+    }
+
+    if (/No transcripts are available in/i.test(message)) {
+      return {
+        statusCode: 422,
+        message: CAPTIONS_LANGUAGE_UNAVAILABLE_MESSAGE,
+        reason: 'youtube_caption_language_unavailable',
+        suggestedAction: 'try_auto_language',
+      };
+    }
+
+    if (this.isCaptionUnavailableError(err)) {
+      return {
+        statusCode: 422,
+        message: CAPTIONS_UNAVAILABLE_MESSAGE,
+        reason: 'youtube_captions_unavailable',
+        suggestedAction: 'upload_video',
+      };
+    }
+
+    return {
+      statusCode: null,
+      message: err.message,
+      reason: 'youtube_transcript_error',
+      suggestedAction: 'retry_or_upload_video',
+    };
   }
 
   async uploadBufferToAssemblyAI(fileBuffer) {

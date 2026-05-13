@@ -5,14 +5,16 @@ import routes from './routes/index.js';
 import errorHandler from './middleware/errorHandler.js';
 import { globalRateLimiter } from './middleware/rateLimiter.js';
 import requestContext from './middleware/requestContext.js';
-import requestLogger from './middleware/requestLogger.js';
+import morganLogger from './loggers/morganLogger.js';
 import config from './config/env.js';
 import ApiResponse from './utils/ApiResponse.js';
 import AppError from './utils/AppError.js';
 
 const app = express();
 
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -23,8 +25,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-demo-role'],
-  exposedHeaders: ['X-Chat-Session-Id', 'X-Request-Id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'x-demo-role'],
+  exposedHeaders: ['Accept-Ranges', 'Content-Length', 'Content-Range', 'X-Chat-Session-Id', 'X-Request-Id'],
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -34,7 +36,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Request-Id', req.requestId);
   next();
 });
-app.use(requestLogger);
+app.use(morganLogger);
 app.use(globalRateLimiter);
 
 app.use('/api', routes);

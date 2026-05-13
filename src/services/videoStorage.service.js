@@ -216,6 +216,24 @@ class VideoStorageService {
     return url;
   }
 
+  async getGcsVideoInfo(storagePath) {
+    const parsed = this.parseGcsStoragePath(storagePath);
+    if (!parsed) return null;
+
+    const { bucketName, storageKey } = parsed;
+    const file = this.getGcsClient().bucket(bucketName).file(storageKey);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+
+    const [metadata] = await file.getMetadata();
+    return {
+      file,
+      fileSize: Number(metadata.size || 0),
+      contentType: metadata.contentType || this.contentTypeFromExtension(storageKey),
+      fileName: path.basename(storageKey),
+    };
+  }
+
   async deleteVideo(storagePath) {
     if (!storagePath) return false;
 

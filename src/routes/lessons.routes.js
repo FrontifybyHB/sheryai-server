@@ -32,6 +32,7 @@ router.get('/:lessonId/playback-url', controller.playbackUrl);
 router.post('/:lessonId/regenerate-chapters', controller.regenerateChapters);
 router.get('/:lessonId/transcript', controller.transcript);
 router.delete('/:lessonId/failed', controller.deleteFailedLesson);
+router.delete('/:lessonId', controller.deleteLesson);
 router.get('/:lessonId', controller.getById);
 router.get('/', validateRequest(validator.listQuery(), 'query'), controller.list);
 

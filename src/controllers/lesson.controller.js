@@ -1,10 +1,17 @@
 import fs from 'fs';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
+import AppError from '../utils/AppError.js';
 
 class LessonController {
   constructor(lessonService) {
     this.lessonService = lessonService;
+  }
+
+  assertInstructor(req) {
+    if (req.user?.role !== 'instructor') {
+      throw new AppError('Only instructors can delete lessons.', 403);
+    }
   }
 
   parseRangeHeader(rangeHeader, fileSize) {
@@ -58,7 +65,10 @@ class LessonController {
   });
 
   video = asyncHandler(async (req, res) => {
-    const video = await this.lessonService.getVideo(req.params.lessonId);
+    const video = await this.lessonService.getVideo(req.params.lessonId, {
+      delivery: req.query.delivery,
+    });
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
     if (video.type === 'redirect') {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -85,7 +95,11 @@ class LessonController {
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
         'Content-Type': video.contentType,
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
+      if (video.type === 'gcs') {
+        return video.file.createReadStream({ start, end }).pipe(res);
+      }
       return fs.createReadStream(video.filePath, { start, end }).pipe(res);
     }
 
@@ -93,7 +107,11 @@ class LessonController {
       'Content-Length': video.fileSize,
       'Content-Type': video.contentType,
       'Accept-Ranges': 'bytes',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
     });
+    if (video.type === 'gcs') {
+      return video.file.createReadStream().pipe(res);
+    }
     return fs.createReadStream(video.filePath).pipe(res);
   });
 
@@ -126,8 +144,15 @@ class LessonController {
   });
 
   deleteFailedLesson = asyncHandler(async (req, res) => {
+    this.assertInstructor(req);
     const result = await this.lessonService.deleteFailedLesson(req.params.lessonId);
     res.json(ApiResponse.success(result, 'Failed lesson deleted'));
+  });
+
+  deleteLesson = asyncHandler(async (req, res) => {
+    this.assertInstructor(req);
+    const result = await this.lessonService.deleteLesson(req.params.lessonId);
+    res.json(ApiResponse.success(result, 'Lesson deleted'));
   });
 
   regenerateChapters = asyncHandler(async (req, res) => {

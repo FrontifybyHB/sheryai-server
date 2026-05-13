@@ -158,6 +158,7 @@ class LessonService {
       progress: lesson.progress || 0,
       chunkCount: lesson.chunkCount || 0,
       error: lesson.error || null,
+      errorDetails: lesson.errorDetails || null,
     };
   }
 
@@ -187,6 +188,7 @@ class LessonService {
       error: lesson.error || null,
       starterQuestions: lesson.starterQuestions || [],
       topicSegments: lesson.topicSegments || [],
+      errorDetails: lesson.errorDetails || null,
       createdAt: lesson.createdAt,
       updatedAt: lesson.updatedAt,
     };
@@ -218,6 +220,11 @@ class LessonService {
       throw new AppError('Only failed lessons can be deleted from this cleanup endpoint.', 400);
     }
 
+    return this.deleteLesson(lessonId);
+  }
+
+  async deleteLesson(lessonId) {
+    const lesson = await this.getById(lessonId);
     const deletedChunks = await this.chunkRepository.deleteByLessonId(lessonId);
     const deletedVideo = await this.videoStorageService.deleteVideo(lesson.storagePath).catch(() => false);
     await this.lessonRepository.deleteById(lessonId);
@@ -225,6 +232,7 @@ class LessonService {
 
     return {
       lessonId,
+      courseId: lesson.courseId,
       deleted: true,
       deletedChunks,
       deletedVideo,
@@ -246,10 +254,17 @@ class LessonService {
     };
   }
 
-  async getVideo(lessonId) {
+  async getVideo(lessonId, options = {}) {
     const lesson = await this.getById(lessonId);
+    const shouldProxy = options.delivery === 'proxy';
 
     if (lesson.storagePath?.startsWith('gs://')) {
+      if (shouldProxy) {
+        const gcsInfo = await this.videoStorageService.getGcsVideoInfo(lesson.storagePath);
+        if (!gcsInfo) throw new AppError('Video file not found in cloud storage.', 404);
+        return { type: 'gcs', ...gcsInfo };
+      }
+
       const signedUrl = await this.videoStorageService.getSignedVideoUrl(lesson.storagePath);
       if (signedUrl) return { type: 'redirect', url: signedUrl };
       if (!lesson.videoUrl) throw new AppError('Video file not found in cloud storage.', 404);
