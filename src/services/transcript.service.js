@@ -291,7 +291,7 @@ class TranscriptService {
   async submitTranscript(audioUrl, language = 'auto') {
     const requestConfig = {
       audio_url: audioUrl,
-      speech_models: ['universal-2'],
+      speech_model: 'best',
       punctuate: true,
       format_text: true,
       language_detection: language === 'auto',
@@ -307,15 +307,19 @@ class TranscriptService {
   }
 
   async pollTranscriptUntilDone(transcriptId, onProgress, startPct = 20, endPct = 78) {
-    const pollIntervalMs = 3000;
+    const pollIntervalMs = 4000;
+    const maxPolls = 120; // ~8 minutes max before giving up
     let pct = startPct;
+    let polls = 0;
 
-    while (true) {
+    while (polls < maxPolls) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      polls += 1;
+
       const result = await this.getAssemblyClient().transcripts.get(transcriptId);
 
       if (result.status === 'error') {
-        throw new Error(`AssemblyAI transcription failed: ${result.error}`);
+        throw new Error(`AssemblyAI transcription failed: ${result.error || 'Unknown error'}`);
       }
 
       if (result.status === 'completed') {
@@ -327,6 +331,8 @@ class TranscriptService {
         if (onProgress) await onProgress(pct);
       }
     }
+
+    throw new Error('Transcription timed out after 8 minutes. The file may be too large or AssemblyAI is overloaded. Please try again.');
   }
 
   normalizeAssemblyResult(transcript) {

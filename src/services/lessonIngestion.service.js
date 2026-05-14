@@ -65,12 +65,15 @@ class LessonIngestionService {
       await this.saveTranscriptArtifacts(lessonId, normalizedTranscript, title);
       logger.info('YouTube ingest completed', { lessonId });
     } catch (err) {
-      logger.error('YouTube ingest failed', { lessonId, error: err, details: err.details });
+      const errorDetails = err.details || null;
+      const suggestedAction = errorDetails?.suggestedAction || null;
+      logger.error('YouTube ingest failed', { lessonId, error: err.message, reason: errorDetails?.reason, suggestedAction });
       await this.updateLessonStatus(lessonId, {
         status: 'failed',
         progress: 0,
         error: err.message,
-        errorDetails: err.details || null,
+        errorDetails,
+        suggestedAction,
       }).catch(() => {});
     }
   }

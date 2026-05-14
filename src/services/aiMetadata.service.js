@@ -1,3 +1,5 @@
+import logger from '../loggers/logger.js';
+
 class AiMetadataService {
   constructor(aiClient) {
     this.aiClient = aiClient;
@@ -34,7 +36,8 @@ Return ONLY a valid JSON array of 5 strings.`;
 
       const questions = JSON.parse(jsonMatch[0]);
       return Array.isArray(questions) && questions.length ? questions.slice(0, 5) : fallback;
-    } catch {
+    } catch (err) {
+      logger.warn('generateStarterQuestions failed, using fallback', { error: err.message });
       return fallback;
     }
   }
@@ -93,7 +96,8 @@ Rules:
       }
 
       return segments;
-    } catch {
+    } catch (err) {
+      logger.warn('generateTopicSegments failed', { error: err.message });
       return [];
     }
   }

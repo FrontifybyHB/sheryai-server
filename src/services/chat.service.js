@@ -1,6 +1,7 @@
 import { secondsToLabel } from '../utils/timeFormatter.js';
 import AppError from '../utils/AppError.js';
 import logger from '../loggers/logger.js';
+import { buildSystemInstruction } from '../lib/prompt/ai-video.js';
 
 class ChatService {
   constructor({ lessonRepository, chunkCacheService, chatSessionRepository, aiClient }) {
@@ -12,6 +13,25 @@ class ChatService {
 
   stopwords() {
     return new Set(['a', 'an', 'the', 'is', 'it', 'in', 'on', 'at', 'to', 'of', 'and', 'or', 'for', 'with', 'this', 'that', 'was', 'are', 'be', 'as', 'by', 'from']);
+  }
+
+  // Detects if the user wants a full video summary/notes instead of a specific Q&A
+  isSummaryRequest(message) {
+    return /\b(summarize|summarise|summary|notes|key points?|key takeaway|overview|explain the (whole|entire|full)|what (is|was) this video|what did (he|she|they) (say|explain|cover)|recap|tldr|tl;?dr)\b/i.test(message);
+  }
+
+  // For summary requests: evenly sample chunks across the WHOLE video
+  // For normal Q&A: use BM25 keyword search
+  selectChatChunks(message, chunks, currentTime) {
+    if (this.isSummaryRequest(message)) {
+      const maxSample = 25;
+      const step = Math.max(1, Math.floor(chunks.length / maxSample));
+      return chunks.filter((_, i) => i % step === 0).slice(0, maxSample);
+    }
+    // Normal Q&A — BM25 semantic search + temporal context
+    const semanticChunks = this.bm25Search(message, chunks, 12);
+    const temporalChunks = this.findTemporalChunks(chunks, currentTime, 3);
+    return this.buildContextBlocks(semanticChunks, temporalChunks);
   }
 
   bm25Search(query, chunks, k = 7) {
@@ -75,25 +95,9 @@ class ChatService {
       .join('\n\n');
   }
 
+  // ─── Prompt: edit src/lib/prompt/ai-video.js to change the system instruction ───
   systemInstruction(currentTime) {
-    return `You are Aura - an elite AI Learning Companion embedded inside an intelligent LMS.
-Your role is to be the world's best private tutor for the video lecture the student is watching.
-
-LANGUAGE RULES:
-1. Always respond in English by default.
-2. If the student writes Hinglish, respond in natural Hinglish, but keep technical explanations in English.
-3. Never respond in pure Hindi script. Use English or Roman Hinglish.
-4. The lecture transcript may be in any language; translate and explain concepts in English.
-
-Core Rules:
-1. Answer strictly from the provided transcript chunks. Do not invent outside facts.
-2. Always cite timestamps when referencing specific moments. Format: (MM:SS) or (MM:SS - MM:SS).
-3. If a topic is not in the chunks, say: "This isn't covered in the sections I can see. You might want to ask about [suggest a related topic from the context]."
-4. The student's current playback position is ${secondsToLabel(currentTime)}. Anchor to nearby content when relevant.
-
-Formatting:
-- Use headings, bullets, numbered lists, inline code, and code blocks when helpful.
-- End with a short Key Takeaway.`;
+    return buildSystemInstruction(currentTime, secondsToLabel);
   }
 
   formatHistory(messages) {
@@ -128,16 +132,28 @@ Formatting:
       return;
     }
 
-    const semanticChunks = this.bm25Search(message, chunks, 7);
-    const temporalChunks = this.findTemporalChunks(chunks, currentTime, 2);
-    const contextBlocks = this.buildContextBlocks(semanticChunks, temporalChunks);
+    let contextBlocks;
+    if (this.isSummaryRequest(message)) {
+      // Even-sample the whole video for summary requests
+      const maxSample = 25;
+      const step = Math.max(1, Math.floor(chunks.length / maxSample));
+      const sampledChunks = chunks.filter((_, i) => i % step === 0).slice(0, maxSample);
+      contextBlocks = sampledChunks
+        .map((chunk) => `[${chunk.startLabel} - ${chunk.endLabel}]\n${chunk.text}`)
+        .join('\n\n');
+    } else {
+      const semanticChunks = this.bm25Search(message, chunks, 12);
+      const temporalChunks = this.findTemporalChunks(chunks, currentTime, 3);
+      contextBlocks = this.buildContextBlocks(semanticChunks, temporalChunks);
+    }
 
     if (!contextBlocks.trim()) {
       yield { type: 'error', message: 'Could not find relevant content in the transcript.' };
       return;
     }
 
-    const userMessage = `TRANSCRIPT CONTEXT (most relevant sections):\n\n${contextBlocks}\n\n---\nSTUDENT QUESTION: ${message}`;
+    const videoTitle = lesson.title ? `VIDEO TITLE: ${lesson.title}\n` : '';
+    const userMessage = `${videoTitle}TRANSCRIPT CONTEXT (most relevant sections):\n\n${contextBlocks}\n\n---\nSTUDENT QUESTION: ${message}`;
 
     const streamResult = await this.aiClient.generateContentStream({
       systemInstruction: this.systemInstruction(currentTime),
@@ -170,10 +186,11 @@ Formatting:
 
     try {
       const prompt = `Based on this AI tutor answer about a lecture:
-"${aiAnswer.substring(0, 800)}"
+"${aiAnswer.substring(0, 1200)}"
 
-Suggest 3 natural follow-up questions a student might ask next. Make them short, specific, and English only.
-Return ONLY a JSON array of 3 strings.`;
+Suggest 3 natural follow-up questions a student might ask next.
+Make them short, specific, directly related to what was just explained, and in English only.
+Return ONLY a valid JSON array of 3 strings. No markdown, no explanation.`;
 
       const result = await this.aiClient.generateContent({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -227,7 +244,7 @@ Required format:
 One powerful sentence.
 
 ### Core Concepts
-- Concept Name - clear explanation
+- Concept Name — clear explanation
 
 ### Key Points
 - 5-8 important points
@@ -323,7 +340,7 @@ ${context}`;
     const chunks = await this.chunkCacheService.getChunks(lessonId);
     if (!chunks.length) throw new AppError('No transcript data found for this lesson.', 404);
 
-    const maxChunks = 10;
+    const maxChunks = 20;
     const step = Math.max(1, Math.floor(chunks.length / maxChunks));
     const context = chunks
       .filter((_, index) => index % step === 0)
