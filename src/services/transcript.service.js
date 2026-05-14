@@ -111,14 +111,6 @@ class TranscriptService {
     };
   }
 
-  youtubeSegmentTime(value, duration) {
-    const numeric = Number(value || 0);
-    const numericDuration = Number(duration || 0);
-
-    if (!Number.isFinite(numeric)) return 0;
-    return numericDuration > 120 ? msToSeconds(numeric) : numeric;
-  }
-
   youtubeFetchConfig(language, trace) {
     const configOptions = {};
     if (language !== 'auto') configOptions.lang = language;
@@ -210,11 +202,25 @@ class TranscriptService {
       });
     }
 
-    return this.normalizeTranscript(rawTranscript.map((segment) => ({
-      text: segment.text,
-      start: this.youtubeSegmentTime(segment.offset, segment.duration),
-      end: this.youtubeSegmentTime(Number(segment.offset || 0) + Number(segment.duration || 0), segment.duration),
-    })));
+    const isMilliseconds = rawTranscript.some(
+      (segment) => Number(segment.offset) > 43200 || Number(segment.duration) > 100
+    );
+
+    return this.normalizeTranscript(rawTranscript.map((segment) => {
+      let offset = Number(segment.offset || 0);
+      let duration = Number(segment.duration || 0);
+
+      if (isMilliseconds) {
+        offset = msToSeconds(offset);
+        duration = msToSeconds(duration);
+      }
+
+      return {
+        text: segment.text,
+        start: offset,
+        end: offset + duration,
+      };
+    }));
   }
 
   isCaptionUnavailableError(err) {

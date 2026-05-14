@@ -16,6 +16,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "@google-cloud/storage": "^7.19.0",
     "assemblyai": "^4.8.0",
     "cors": "^2.8.5",
